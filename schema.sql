@@ -8,7 +8,7 @@ create table tasks(
   id             bigserial    primary key,
   parent_id      bigint,
   title          text         not null,
-  status         task_status  not null default 'TODO',
+  task_status    task_status  not null default 'TODO',
   task_type      task_type    not null default 'SET',
   task_order     bigint       not null,
   due            timestamptz  not null default now(),
@@ -36,12 +36,29 @@ begin
 end;
 $$;
 
+create or replace procedure reorder_task(task_id bigint, new_order bigint)
+language plpgsql
+as $$
+begin
+  update tasks ut
+  set task_order = ut.task_order + 1
+  from (
+    select * from tasks t where t.task_order >= new_order order by t.task_order desc
+  ) as candidates
+  where candidates.id = ut.id;
+ 
+  update tasks ut
+  set task_order = new_order
+  where ut.id = task_id;
+end;
+$$;
+
 create or replace function todo_list()
-returns table (status task_status, title text)
+returns table (task_status task_status, title text)
 as $$
 begin
   return query
-  select t.status, t.title from tasks t where t.parent_id = 1 and t.status = 'TODO';
+  select t.task_status, t.title from tasks t where t.parent_id = 1 and t.task_status = 'TODO';
 end;
 $$ language plpgsql;
 

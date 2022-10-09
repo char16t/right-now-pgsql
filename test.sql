@@ -5,4 +5,6 @@ call insert_task(title := 'Write result of a differentiation in terms of depende
 call insert_task(title := 'Use of the subjunctive in a quod-clause in Renaissance Latin');
 call insert_task(title := 'Finding duplicate blocks of text within a file using shell script');
 
+call reorder_task(task_id := 5, new_order := 2);
+
 select * from todo_list();
