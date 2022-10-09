@@ -53,12 +53,22 @@ begin
 end;
 $$;
 
+create or replace procedure task_done(task_id bigint)
+language plpgsql
+as $$
+begin
+  update tasks ut
+  set task_status = 'DONE'
+  where ut.id = task_id;
+end;
+$$;
+
 create or replace function todo_list()
 returns table (task_status task_status, title text)
 as $$
 begin
   return query
-  select t.task_status, t.title from tasks t where t.parent_id = 1 and t.task_status = 'TODO';
+  select t.task_status, t.title from tasks t where t.parent_id = 1 and t.task_status = 'TODO' order by t.task_order;
 end;
 $$ language plpgsql;
 
