@@ -8,7 +8,7 @@ create table tasks(
   id             bigserial    primary key,
   parent_id      bigint,
   title          text         not null,
-  task_status    task_status  not null default 'TODO',
+  status         task_status  not null default 'TODO',
   task_type      task_type    not null default 'SET',
   task_order     bigint       not null,
   due            timestamptz  not null default now(),
@@ -36,7 +36,18 @@ begin
 end;
 $$;
 
+create or replace function todo_list()
+returns table (status task_status, title text)
+as $$
+begin
+  return query
+  select t.status, t.title from tasks t where t.parent_id = 1 and t.status = 'TODO';
+end;
+$$ language plpgsql;
+
+
 insert into tasks(parent_id, task_order, title) values (null, 1, 'Meta task');
+
 call insert_task(title := 'Make a init-sql in Spring Boot-1.4.1-RELEASE');
 call insert_task(title := 'Configure port for a Spring Boot application');
 call insert_task(title := 'Running code after Spring Boot starts');
@@ -44,4 +55,4 @@ call insert_task(title := 'Write result of a differentiation in terms of depende
 call insert_task(title := 'Use of the subjunctive in a quod-clause in Renaissance Latin');
 call insert_task(title := 'Finding duplicate blocks of text within a file using shell script');
 
-select * from tasks order by task_order;
+select * from todo_list();
