@@ -39,6 +39,7 @@ where counts.task_status = 'DONE';
 select max(due) from tasks t where t.parent_id = 1;
 
 -- ALL(task_id=1)
+-- Update from leafs to root
 with calc_estimate as (
 	select coalesce(sum(estimate), 0) as res from tasks where parent_id = 1
 ),
@@ -89,5 +90,5 @@ from
 	calc_estimate,
 	calc_start_to,
 	calc_due,
-  calc_progress;
-  
+    calc_progress;
+
