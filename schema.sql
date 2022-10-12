@@ -25,14 +25,14 @@ create table tasks(
   constraint unique_task_order unique (parent_id, task_order)
 );
 
-create or replace procedure insert_task(title text)
+create or replace procedure insert_task(parent bigint default 1, title text default 'Unnamed task')
 language plpgsql
 as $$
 declare
   max_task_order bigint;
 begin
   select coalesce(max(task_order), 1) into max_task_order from tasks where parent_id = 1;
-  insert into tasks(parent_id, task_order, title) values (1, max_task_order+1, title);
+  insert into tasks(parent_id, task_order, title) values (parent, max_task_order+1, title);
 end;
 $$;
 
