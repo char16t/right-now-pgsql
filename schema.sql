@@ -15,17 +15,84 @@ create table tasks(
   available_from timestamptz  not null default now(),
   start_to       timestamptz  not null default now(),
   progress       bigint       not null default 0,
-  estimate       bigint       not null default 5,
+  estimate       float8       not null default 5,
   constraint fk_parent_id foreign key (parent_id) 
     references tasks(id)
     on delete cascade 
-    on update cascade,
+    on update restrict,
   constraint id_no_cycle       check(id <> parent_id),
   constraint title_non_empty   check(length(title) > 0),
   constraint check_dates       check (available_from <= due),
   constraint positive_estimate check (estimate > 0),
   constraint unique_task_order unique (parent_id, task_order)
 );
+
+create or replace function tasks_before_update_trigger_function()
+returns trigger 
+as $$
+declare 
+  descendant   record;
+begin
+	if old.task_status = 'TODO'::"task_status" and new.task_status = 'DONE'::"task_status" then 
+		new.progress := 100;
+	end if;
+	return new;
+end
+$$ language plpgsql;
+create or replace trigger tasks_before_update_trigger before update
+  on tasks
+  for each row
+  execute procedure tasks_before_update_trigger_function();
+
+create or replace function tasks_after_update_trigger_function()
+returns trigger 
+as $$
+declare 
+  descendant   record;
+begin
+	for descendant in
+		select * from tasks t where t.parent_id = new.id
+	loop 
+		update tasks 
+		set 
+		"task_status" = (case 
+			when old.task_status = 'TODO'::"task_status" and new.task_status = 'DONE'::"task_status" 
+			then 'DONE'::"task_status"
+			when old.task_status = 'DONE'::"task_status" and new.task_status = 'TODO'::"task_status" 
+			then 'TODO'::"task_status"
+			else descendant.task_status
+		end),
+		progress = (case 
+			when old.task_status = 'TODO'::"task_status" and new.task_status = 'DONE'::"task_status" 
+			then 100
+			when old.task_status = 'DONE'::"task_status" and new.task_status = 'TODO'::"task_status" 
+			then 0
+			else descendant.progress
+		end),
+		estimate = (case
+			when old.estimate <> new.estimate 
+			then new.estimate * descendant.estimate / (select coalesce(sum(t.estimate), 0) from tasks t where t.parent_id = new.id)
+			else descendant.estimate
+		end),
+		due = (case 
+			when old.due <> new.due 
+			then descendant.due + (new.due - old.due)
+			else descendant.due
+		end),
+		available_from = (case
+			when (old.available_from <> new.available_from) and (descendant.available_from < new.available_from)
+			then new.available_from
+			else descendant.available_from
+		end)
+		where id = descendant.id;
+	end loop;
+	return new;
+end
+$$ language plpgsql;
+create or replace trigger tasks_after_update_trigger after update
+  on tasks
+  for each row
+  execute procedure tasks_after_update_trigger_function();
 
 create or replace function t_ancestors(root_id bigint)
 returns table (id bigint) as $$
@@ -38,6 +105,37 @@ begin
     from tasks as sa
     join c ON c.parent_id = sa.id
   ) select * from c where c.parent_id != root_id;
+end;
+$$ language plpgsql;
+
+-- Потомки
+create or replace function t_descendants(root_id bigint)
+returns table (id bigint) as $$
+begin
+  return query
+  with recursive c as (
+      select root_id as id
+      union all
+      select sa.id
+      from tasks as sa
+      join c ON c.id = sa.parent_id
+  ) select * from c where c.id != root_id;
+end;
+$$ language plpgsql;
+
+-- Потомки-листья
+create or replace function t_descendant_leafs(root_id bigint)
+returns table (id bigint) as $$
+begin
+  return query
+    with recursive c as (
+          select root_id as id, false as ex
+          union all
+          select sa.id, exists (select parent_id as id from tasks ttt where sa.id = parent_id)
+          from tasks as sa
+          join c ON c.id = sa.parent_id
+    )
+    select c.id from c where c.id != root_id and ex = false;
 end;
 $$ language plpgsql;
 
@@ -60,7 +158,7 @@ begin
 	    case
 		    when all_estimate.res <> 0
 		    then ceil(done_estimate.res / all_estimate.res * 100)::bigint
-		    else 0::bigint
+		    else 100::bigint
 		end as res
 	  from 
 	    calc_estimate as all_estimate,
@@ -179,18 +277,6 @@ begin
 end;
 $$;
 
--- Works correct only for leafs
-create or replace procedure task_done(task_id bigint)
-language plpgsql
-as $$
-begin
-  update tasks ut
-  set task_status = 'DONE'
-  where ut.id = task_id;
-  call t_update_ancestors(task_id);
-end;
-$$;
-
 create or replace function todo_list()
 returns table (task_status task_status, title text)
 as $$
@@ -199,5 +285,3 @@ begin
   select t.task_status, t.title from tasks t where t.parent_id = 1 and t.task_status = 'TODO' order by t.task_order;
 end;
 $$ language plpgsql;
-
-insert into tasks(parent_id, task_order, title) values (null, 1, 'Meta task');
