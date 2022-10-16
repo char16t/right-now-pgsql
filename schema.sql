@@ -22,9 +22,9 @@ create table tasks(
     on update restrict,
   constraint id_no_cycle       check(id <> parent_id),
   constraint title_non_empty   check(length(title) > 0),
-  constraint check_dates       check (available_from <= due),
-  constraint positive_estimate check (estimate > 0),
-  constraint unique_task_order unique (parent_id, task_order)
+  --constraint check_dates       check (available_from <= due),
+  constraint positive_estimate check (estimate > 0)
+  --, constraint unique_task_order unique (parent_id, task_order)
 );
 
 create or replace function tasks_before_update_trigger_function()
@@ -233,15 +233,16 @@ begin
 end;
 $$;
 
-create or replace procedure insert_task(parent bigint default 1, title text default 'Unnamed task')
+--drop procedure insert_task(bigint, text);
+create or replace procedure insert_task(parent bigint default 1, title text default 'Unnamed task', due timestamptz default now(), available_from timestamptz default now())
 language plpgsql
 as $$
 declare
   max_task_order bigint;
   id_inserted bigint;
 begin
-  select coalesce(max(task_order), 1) into max_task_order from tasks where parent_id = parent;
-  insert into tasks(parent_id, task_order, title) values (parent, max_task_order+1, title)
+  select coalesce(max(task_order), 0) into max_task_order from tasks where parent_id = parent;
+  insert into tasks(parent_id, task_order, title, due, available_from) values (parent, max_task_order+1, title, due, available_from)
   returning id into id_inserted;
   call t_update_ancestors(id_inserted);
 end;
@@ -274,6 +275,71 @@ begin
 		   ) t
 	) as updated
 	where updated.id = t.id;
+end;
+$$;
+
+create or replace procedure reorder_task(task_id bigint, new_order bigint)
+language plpgsql
+as $$
+declare 
+  task           record;
+  count_siblings bigint;
+  range_from     bigint;
+  range_to       bigint;
+  sibling        record;
+begin
+	select * into task from tasks t where t.id = task_id; 
+	select coalesce(count(*), 0) into count_siblings from tasks t where t.parent_id = task.parent_id;
+	if task.task_order <> new_order and new_order >= 1 and new_order <= count_siblings then
+		if new_order < task.task_order then
+		  range_from := new_order;
+		  range_to   := task.task_order - 1;
+		else -- task.task_order < new_order 
+		  range_from := task.task_order + 1;
+		  range_to   := new_order;
+		end if;
+		update tasks t 
+		set task_order = new_order
+		where t.id = task_id;
+	    for sibling in
+	      select * 
+	      from tasks t 
+	      where 
+	      	    t.id <> task_id 
+	      	and t.parent_id = task.parent_id
+	      	and t.task_order >= range_from
+	      	and t.task_order <= range_to
+	      order by t.task_order
+	    loop
+		  update tasks t 
+		  set 
+		  	task_order = (case 
+			  when new_order < task.task_order 
+			  then task_order + 1
+			  -- task.task_order < new_order  
+			  else task_order - 1 
+			end),
+			due = (case
+			  when new_order < task.task_order
+			  then due + (interval '1 minute' * estimate)
+			  -- task.task_order < new_order
+			  else due - (interval '1 minute' * estimate)
+			end),
+			available_from = (case
+			  when new_order < task.task_order
+			  then available_from + (interval '1 minute' * estimate)
+			  -- task.task_order < new_order
+			  else available_from - (interval '1 minute' * estimate)
+			end),
+			start_to = (case
+			  when new_order < task.task_order
+			  then start_to + (interval '1 minute' * estimate)
+			  -- task.task_order < new_order
+			  else start_to - (interval '1 minute' * estimate)
+			end)
+		  where t.id = sibling.id;
+	    end loop;
+	end if;
 end;
 $$;
 
