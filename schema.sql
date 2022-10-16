@@ -275,6 +275,15 @@ begin
 		   ) t
 	) as updated
 	where updated.id = t.id;
+
+    -- update order
+	update tasks t 
+	set task_order = tmp.new_row_number
+	from (select
+	ROW_NUMBER () OVER (ORDER BY t.id) as new_row_number,
+	t.*
+	from tasks t where t.parent_id = task_parent_id order by t.task_order) as tmp
+	where t.id = tmp.id;
 end;
 $$;
 
