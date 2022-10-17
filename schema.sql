@@ -16,6 +16,7 @@ create table tasks(
   start_to       timestamptz  not null default now(),
   progress       bigint       not null default 0,
   estimate       float8       not null default 5,
+  occ            uuid         not null default '00000000-0000-0000-0000-000000000000'::uuid,
   constraint fk_parent_id foreign key (parent_id) 
     references tasks(id)
     on delete cascade 
@@ -27,12 +28,52 @@ create table tasks(
   --, constraint unique_task_order unique (parent_id, task_order)
 );
 
+create or replace function tasks_before_insert_trigger_function()
+returns trigger 
+as $$
+begin
+	if new.occ = '00000000-0000-0000-0000-000000000000'::uuid then
+	  new.occ := gen_random_uuid();
+	end if;
+	return new;
+end
+$$ language plpgsql;
+create or replace trigger tasks_before_insert_trigger before insert
+  on tasks
+  for each row
+  execute procedure tasks_before_insert_trigger_function();
+
+create or replace function tasks_after_insert_trigger_function()
+returns trigger 
+as $$
+begin
+	update tasks t 
+	set 
+		task_status = updated.st,
+		estimate = updated.estimate,
+		due = updated.duedate,
+		progress = updated.progress,
+		start_to = updated.start_to,
+		occ = new.occ
+	from (select * from t_recalc_task(new.parent_id)) as updated
+    where t.id = updated.id and t.occ != new.occ;
+	return new;
+end
+$$ language plpgsql;
+create or replace trigger tasks_after_insert_trigger after insert
+  on tasks
+  for each row
+  execute procedure tasks_after_insert_trigger_function();
+
 create or replace function tasks_before_update_trigger_function()
 returns trigger 
 as $$
 declare 
   descendant   record;
 begin
+	if old.occ = new.occ then
+	  new.occ := gen_random_uuid();
+	end if;
 	if old.task_status = 'TODO'::"task_status" and new.task_status = 'DONE'::"task_status" then 
 		new.progress := 100;
 	end if;
@@ -49,7 +90,36 @@ returns trigger
 as $$
 declare 
   descendant   record;
-begin
+begin	
+--	raise warning 'call tasks_after_update_trigger_function (depth=%)', pg_trigger_depth();
+--	raise warning 'old: %', old;
+--	raise warning 'new: %', new;
+--    raise warning '---';
+   
+    -- update old.parent_id
+	update tasks t 
+	set 
+		task_status = updated.st,
+		estimate = updated.estimate,
+		due = updated.duedate,
+		progress = updated.progress,
+		start_to = updated.start_to,
+		occ = new.occ
+	from (select * from t_recalc_task(old.parent_id)) as updated
+    where t.id = updated.id and t.occ != new.occ;
+   
+    -- update new.parent_id
+   	update tasks t 
+	set 
+		task_status = updated.st,
+		estimate = updated.estimate,
+		due = updated.duedate,
+		progress = updated.progress,
+		start_to = updated.start_to,
+		occ = new.occ
+	from (select * from t_recalc_task(new.parent_id)) as updated
+    where t.id = updated.id and t.occ != new.occ;
+   
 	for descendant in
 		select * from tasks t where t.parent_id = new.id
 	loop 
@@ -83,8 +153,9 @@ begin
 			when (old.available_from <> new.available_from) and (descendant.available_from < new.available_from)
 			then new.available_from
 			else descendant.available_from
-		end)
-		where id = descendant.id;
+		end),
+		occ = new.occ
+		where id = descendant.id and descendant.occ != new.occ;
 	end loop;
 	return new;
 end
@@ -244,7 +315,7 @@ begin
   select coalesce(max(task_order), 0) into max_task_order from tasks where parent_id = parent;
   insert into tasks(parent_id, task_order, title, due, available_from) values (parent, max_task_order+1, title, due, available_from)
   returning id into id_inserted;
-  call t_update_ancestors(id_inserted);
+  --call t_update_ancestors(id_inserted);
 end;
 $$;
 
