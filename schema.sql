@@ -17,6 +17,7 @@ create table tasks(
   progress       bigint       not null default 0,
   estimate       float8       not null default 5,
   occ            uuid         not null default '00000000-0000-0000-0000-000000000000'::uuid,
+  expanded       boolean      not null default true,
   constraint fk_parent_id foreign key (parent_id) 
     references tasks(id)
     on delete cascade 
@@ -28,10 +29,88 @@ create table tasks(
   --, constraint unique_task_order unique (parent_id, task_order)
 );
 
+create or replace function t_recalc_task(task_id bigint)
+returns table (
+  id bigint,
+  st task_status,
+  estimate bigint,
+  start_to timestamptz,
+  duedate timestamptz,
+  progress bigint
+) as $$
+begin
+	return query
+	with 
+	original_task as (
+	    select * from tasks t where t.id = task_id
+	),
+	calc_estimate as (
+		select coalesce(sum(t.estimate), 0)::bigint as res from tasks t where t.parent_id = task_id
+	),
+	calc_progress as (
+	  select 
+	    case
+		    when all_estimate.res <> 0
+		    then ceil(done_estimate.res / all_estimate.res * 100)::bigint
+		    else 100::bigint
+		end as res
+	  from 
+	    calc_estimate as all_estimate,
+	   (select coalesce(sum(t.estimate), 0) as res from tasks t where t.parent_id = task_id and "task_status" = 'DONE') as done_estimate
+	),
+	count_statuses as (
+		select v.ts as "task_status", count(t."task_status") as count
+		from 
+			(values ('TODO'::task_status), ('DONE'::task_status)) v("ts") 
+			left join tasks t on (t."task_status" = v."ts" and t.parent_id = task_id)
+		group by v.ts
+	),
+	sumall_statuses as (
+		  select sum(c.count) from count_statuses c
+	),
+	calc_status as (
+		select 
+			case when sumall_statuses.sum = count_statuses.count and sumall_statuses.sum != 0
+			     then 'DONE'::"task_status"
+			     else 'TODO'::"task_status" 
+			end as res
+		from count_statuses, sumall_statuses
+		where count_statuses.task_status = 'DONE'
+	),
+	calc_due as (
+		select 
+			coalesce(max(t.due), (select t.due from original_task t)) as res 
+		from tasks t where t.parent_id = task_id
+	),
+	calc_start_to as (
+		select (calc_due.res - (interval '1 minute' * calc_estimate.res)) as res from calc_due, calc_estimate
+	)
+	select 
+		task_id as id, 
+		calc_status.res as "st", 
+		calc_estimate.res as "estimate",
+		calc_start_to.res as "start_to", 
+		calc_due.res as "duedate",
+		calc_progress.res as "progress"
+	from 
+		calc_status, 
+		calc_estimate,
+		calc_start_to,
+		calc_due,
+	    calc_progress;
+end
+$$ language plpgsql;
+
 create or replace function tasks_before_insert_trigger_function()
 returns trigger 
 as $$
+declare
+  max_task_order bigint;
 begin
+	if new.task_order is null then 
+      select coalesce(max(task_order), 0) into max_task_order from tasks where parent_id = new.parent_id;
+      new.task_order := max_task_order + 1;
+    end if;
 	if new.occ = '00000000-0000-0000-0000-000000000000'::uuid then
 	  new.occ := gen_random_uuid();
 	end if;
@@ -208,74 +287,6 @@ begin
     )
     select c.id from c where c.id != root_id and ex = false;
 end;
-$$ language plpgsql;
-
-create or replace function t_recalc_task(task_id bigint)
-returns table (
-  id bigint,
-  st task_status,
-  estimate bigint,
-  start_to timestamptz,
-  duedate timestamptz,
-  progress bigint
-) as $$
-begin
-	return query
-	with calc_estimate as (
-		select coalesce(sum(t.estimate), 0)::bigint as res from tasks t where t.parent_id = task_id
-	),
-	calc_progress as (
-	  select 
-	    case
-		    when all_estimate.res <> 0
-		    then ceil(done_estimate.res / all_estimate.res * 100)::bigint
-		    else 100::bigint
-		end as res
-	  from 
-	    calc_estimate as all_estimate,
-	   (select coalesce(sum(t.estimate), 0) as res from tasks t where t.parent_id = task_id and "task_status" = 'DONE') as done_estimate
-	),
-	count_statuses as (
-		select v.ts as "task_status", count(t."task_status") as count
-		from 
-			(values ('TODO'::task_status), ('DONE'::task_status)) v("ts") 
-			left join tasks t on (t."task_status" = v."ts" and t.parent_id = task_id)
-		group by v.ts
-	),
-	sumall_statuses as (
-		  select sum(c.count) from count_statuses c
-	),
-	calc_status as (
-		select 
-			case when sumall_statuses.sum = count_statuses.count and sumall_statuses.sum != 0
-			     then 'DONE'::"task_status"
-			     else 'TODO'::"task_status" 
-			end as res
-		from count_statuses, sumall_statuses
-		where count_statuses.task_status = 'DONE'
-	),
-	calc_due as (
-		select 
-			coalesce(max(t.due), (select t.due from tasks t where t.id = task_id)) as res 
-		from tasks t where t.parent_id = task_id
-	),
-	calc_start_to as (
-		select (calc_due.res - (interval '1 minute' * calc_estimate.res)) as res from calc_due, calc_estimate
-	)
-	select 
-		task_id as id, 
-		calc_status.res as "st", 
-		calc_estimate.res as "estimate",
-		calc_start_to.res as "start_to", 
-		calc_due.res as "duedate",
-		calc_progress.res as "progress"
-	from 
-		calc_status, 
-		calc_estimate,
-		calc_start_to,
-		calc_due,
-	    calc_progress;
-end
 $$ language plpgsql;
 
 create or replace procedure t_update_ancestors(task_id bigint)
