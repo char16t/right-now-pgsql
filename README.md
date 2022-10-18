@@ -9,3 +9,9 @@ Run:
 ```
 postgrest backend/postgrest.conf
 ```
+
+Open:
+
+```
+http://localhost:3000/
+```
