@@ -15,3 +15,7 @@ Open:
 ```
 http://localhost:3000/
 ```
+
+```
+http://localhost:3000/rpc/todo_list
+```
