@@ -434,11 +434,83 @@ begin
 end;
 $$;
 
-create or replace function todo_list()
-returns table (task_status task_status, title text)
+create or replace function todo_list(root_id bigint)
+returns setof public.tasks
 as $$
 begin
   return query
-  select t.task_status, t.title from tasks t where t.parent_id = 1 and t.task_status = 'TODO' order by t.task_order;
+	with recursive all_tasks as (
+		select id, parent_id, expanded, array[expanded] as expanded_tasks, true as has_childs, 'SET'::"task_type" as task_type
+		from tasks
+		where id = root_id
+		union all
+		select c.id, c.parent_id, c.expanded, p.expanded_tasks||c.expanded, exists (select ttt.parent_id as id from tasks ttt where c.id = ttt.parent_id), c."task_type" 
+		from tasks c
+		join all_tasks p on (
+			c.parent_id = p.id 
+			and p.task_type != 'ONE_OF'::"task_type"
+			and c."task_status" = 'TODO'::"task_status" 
+		)
+		where false <> all(p.expanded_tasks) 
+	),
+	not_ordered_tasks as (
+		select id, parent_id, expanded, array[expanded] as expanded_tasks, true as has_childs, 'SET'::"task_type" as task_type
+		from tasks
+		where id = root_id
+		union all
+		select c.id, c.parent_id, c.expanded, p.expanded_tasks||c.expanded, exists (select ttt.parent_id as id from tasks ttt where c.id = ttt.parent_id), c."task_type" 
+		from tasks c
+		join all_tasks p on (
+			c.parent_id = p.id 
+			and p.task_type != 'ONE_OF'::"task_type"
+			and c."task_status" = 'TODO'::"task_status" 
+		)
+		where false <> all(p.expanded_tasks) and c."task_type" != 'ORDERED'::"task_type" 
+	),
+	ordered_tasks as (
+		select * from all_tasks 
+		except all
+		select * from not_ordered_tasks
+	),
+	first_descendants_of_ordered_childs as (
+		select 
+			distinct on (t.parent_id)
+			t.*
+		from all_tasks allt, tasks t
+		where 
+			allt.parent_id in (select id from ordered_tasks)
+			and allt.id = t.id
+		order by  t.parent_id, t.task_order asc
+	),
+	all_descendants_of_ordered_childs as (
+		select
+			t.*
+		from all_tasks allt, tasks t
+		where 
+			allt.parent_id in (select id from ordered_tasks)
+			and allt.id = t.id
+		order by t.task_order asc
+	),
+	tail_descendants_of_ordered_childs as (
+		select * from all_descendants_of_ordered_childs 
+		except all
+		select * from first_descendants_of_ordered_childs
+	),
+	res as (
+		select id from all_tasks
+		except all
+		select id from tail_descendants_of_ordered_childs
+	)
+	select 
+		--allt.*, 
+		t.* 
+	from all_tasks allt, tasks t, res
+	where 
+		allt.id = t.id
+		and t.id = res.id
+		and t.id != root_id
+		and ((allt.has_childs = true and t.expanded = false and allt.task_type != 'ONE_OF'::"task_type") 
+		  or (allt.has_childs = false and allt.task_type != 'ONE_OF'::"task_type")
+		  or  allt.task_type = 'ONE_OF'::"task_type");
 end;
 $$ language plpgsql;
