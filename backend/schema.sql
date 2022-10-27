@@ -1,4 +1,5 @@
 drop table if exists tasks cascade;
+drop table if exists task_info cascade;
 drop type if exists task_status cascade;
 drop type if exists task_type cascade;
 
@@ -7,7 +8,6 @@ create type task_type as enum('ORDERED', 'SET', 'ONE_OF');
 create table tasks(
   id             bigserial    primary key,
   parent_id      bigint,
-  title          text         not null,
   task_status    task_status  not null default 'TODO',
   task_type      task_type    not null default 'SET',
   task_order     bigint       not null,
@@ -23,10 +23,15 @@ create table tasks(
     on delete cascade 
     on update restrict,
   constraint id_no_cycle       check(id <> parent_id),
-  constraint title_non_empty   check(length(title) > 0),
   --constraint check_dates       check (available_from <= due),
   constraint positive_estimate check (estimate > 0)
   --, constraint unique_task_order unique (parent_id, task_order)
+);
+
+create table task_info(
+  id bigint primary key references tasks,
+  title text not null,
+  constraint title_non_empty check(length(title) > 0)
 );
 
 create or replace function t_recalc_task(task_id bigint)
@@ -331,8 +336,9 @@ declare
   id_inserted bigint;
 begin
   select coalesce(max(task_order), 0) into max_task_order from tasks where parent_id = parent;
-  insert into tasks(parent_id, task_order, title, due, available_from) values (parent, max_task_order+1, title, due, available_from)
+  insert into tasks(parent_id, task_order, due, available_from) values (parent, max_task_order+1, due, available_from)
   returning id into id_inserted;
+  insert into task_info(id, title) values(id_inserted, title);
   --call t_update_ancestors(id_inserted);
 end;
 $$;
@@ -441,7 +447,7 @@ begin
 end;
 $$;
 
-create or replace function todo_list(root_id bigint)
+create or replace function todo_list_internal(root_id bigint)
 returns setof public.tasks
 as $$
 begin
@@ -510,7 +516,7 @@ begin
 	)
 	select 
 		--allt.*, 
-		t.* 
+		t.*
 	from all_tasks allt, tasks t, res
 	where 
 		allt.id = t.id
@@ -519,5 +525,36 @@ begin
 		and ((allt.has_childs = true and t.expanded = false and allt.task_type != 'ONE_OF'::"task_type") 
 		  or (allt.has_childs = false and allt.task_type != 'ONE_OF'::"task_type")
 		  or  allt.task_type = 'ONE_OF'::"task_type");
+end;
+$$ language plpgsql;
+
+
+create or replace function todo_list(root_id bigint)
+returns table (
+  id             bigint,
+  parent_id      bigint,
+  title          text,
+  task_status    task_status,
+  task_type      task_type,
+  task_order     bigint,
+  due            timestamptz,
+  available_from timestamptz,
+  start_to       timestamptz,
+  progress       bigint,
+  estimate       float8,
+  occ            uuid,
+  expanded       boolean
+)
+as $$
+begin
+  return query
+  select 
+    t.id, t.parent_id, ti.title, t.task_status, 
+    t.task_type, t.task_order, t.due, t.available_from, 
+    t.start_to, t.progress, t.estimate, t.occ, t.expanded
+  from 
+    todo_list_internal(1) as t, 
+    task_info ti 
+  where t.id = ti.id;
 end;
 $$ language plpgsql;
