@@ -45,7 +45,14 @@ begin
 	    select * from tasks t where t.id = task_id
 	),
 	calc_estimate as (
-		select coalesce(sum(t.estimate), 0)::bigint as res from tasks t where t.parent_id = task_id
+		select
+			case
+				when (select pt.task_type = 'ONE_OF'::task_type from tasks pt where pt.id = task_id limit 1)
+				then coalesce(max(t.estimate), 0)::bigint
+				else coalesce(sum(t.estimate), 0)::bigint
+			end as res
+		from tasks t 
+		where t.parent_id = task_id
 	),
 	calc_progress as (
 	  select 
