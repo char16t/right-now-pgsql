@@ -1,3 +1,5 @@
+Pure PgSQL implementation of [Right Now Task Engine](https://github.com/char16t/right-now). It's too difficult for support and improvements, so I had to switch to Neo4J. Read the details of the problem and solutions here: https://github.com/char16t/right-now
+
 Install:
 
 1. Create database `tasks`
